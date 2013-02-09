@@ -24,7 +24,7 @@
 
 // print function error log
 #define _pfelog(f,fmt,...) \
-    printf( "failed to " #f "(): %s" fmt, \
+    printf( "failed to " #f "(): %s" fmt "\n", \
             ( errno ) ? strerror(errno) : "", ##__VA_ARGS__ )
 #define pfelog(f,...) _pfelog(f,__VA_ARGS__)
 
