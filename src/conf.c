@@ -16,7 +16,6 @@
 #define DEFAULT_NTHREAD     1
 #define DEFAULT_BKTSIZE     4096
 #define DEFAULT_DBMAPSIZE   1024*1024*10
-#define DEFAULT_DBDIR       "dbdir"
 #define DEFAULT_DBFLAGS     0
 #define DEFAULT_DBPERM      0644
 
@@ -79,26 +78,37 @@ static void check_addr( conf_t *cfg )
 conf_t *cfg_alloc( int argc, const char *argv[] )
 {
     conf_t *cfg = palloc( conf_t );
+    char *val = rindex( argv[0], '/' );
     
+    *val = 0;
     if( !cfg ){
         pfelog( malloc );
         exit( EXIT_FAILURE );
     }
+    else if( !val ){
+        pdealloc( cfg );
+        pfelog( rindex );
+        exit( EXIT_FAILURE );
+    }
     
+    *val = 0;
     // set default configration
+    if( !( cfg->dbdir = realpath( argv[0], NULL ) ) ){
+        pfelog( realpath, "%s", val );
+        exit( EXIT_FAILURE );
+    }
     cfg->addr = DEFAULT_ADDR;
     cfg->port = DEFAULT_PORT;
     cfg->portstr = NULL;
     cfg->nthd = DEFAULT_NTHREAD;
     cfg->bktsize = DEFAULT_BKTSIZE;
     cfg->mapsize = DEFAULT_DBMAPSIZE;
-    cfg->dir = DEFAULT_DBDIR;
     cfg->flgs = DEFAULT_DBFLAGS;
     cfg->perm = DEFAULT_DBPERM;
     
     if( argc > 1 )
     {
-        char *opt,*val;
+        char *opt;
         char *needle;
         int i = 1;
         
@@ -115,7 +125,10 @@ conf_t *cfg_alloc( int argc, const char *argv[] )
                 
                 // check opt-type
                 if( *opt != '-' || !isalpha( opt[1] ) || opt[2] ){
-                    config_eexit( opt, "%s", strerror(EINVAL) );
+                    config_eexit( opt, "invalid option" );
+                }
+                else if( !val ){
+                    config_eexit( opt, "undefined value" );
                 }
                 // check opt val
                 errno = 0;
@@ -139,7 +152,13 @@ conf_t *cfg_alloc( int argc, const char *argv[] )
                     break;
                     // db dir
                     case 'd':
-                        cfg->dir = val;
+                        // remove default-dbdir
+                        pdealloc( cfg->dbdir );
+                        cfg->dbdir = realpath( val, NULL );
+                        if( !cfg->dbdir ){
+                            pfelog( realpath );
+                            usage();
+                        }
                     break;
                     /* TODO: flags
                     case 'f':
@@ -200,6 +219,9 @@ conf_t *cfg_alloc( int argc, const char *argv[] )
 
 void cfg_dealloc( conf_t *cfg )
 {
+    if( cfg->dbdir ){
+        pdealloc( cfg->dbdir );
+    }
     pdealloc( cfg );
 }
 

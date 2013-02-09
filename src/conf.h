@@ -9,7 +9,9 @@
 #ifndef ___CONF___
 #define ___CONF___
 
+#include <unistd.h>
 #include <stdint.h>
+#include <limits.h>
 #include <sys/types.h>
 
 typedef struct {
@@ -21,7 +23,7 @@ typedef struct {
     uint8_t nthd;
     uint16_t bktsize;
     uint32_t mapsize;
-    const char *dir;
+    const char *dbdir;
     unsigned int flgs;
     mode_t perm;
 } conf_t;
