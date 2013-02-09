@@ -16,6 +16,8 @@ typedef struct {
     // TODO: working dir
     // const char *cwd;
     const char *addr;
+    const char *portstr;
+    uint16_t port;
     uint8_t nthd;
     uint16_t bktsize;
     uint32_t mapsize;
@@ -23,6 +25,9 @@ typedef struct {
     unsigned int flgs;
     mode_t perm;
 } conf_t;
+
+// FQDN maximum length: 255 bytes(include extension delimiter)
+#define FQDN_MAX_LEN  255
 
 conf_t *cfg_alloc( int argc, const char *argv[] );
 void cfg_dealloc( conf_t *cfg );

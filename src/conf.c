@@ -11,7 +11,8 @@
 #include "sparkled.h"
 #include <ctype.h>
 
-#define DEFAULT_LISTEN      "127.0.0.1:1977"
+#define DEFAULT_ADDR        "127.0.0.1:1977"
+#define DEFAULT_PORT        1977
 #define DEFAULT_NTHREAD     1
 #define DEFAULT_BKTSIZE     4096
 #define DEFAULT_DBMAPSIZE   1024*1024*10
@@ -36,6 +37,45 @@ static void usage( void )
 }
 
 
+static void check_addr( conf_t *cfg )
+{
+    char *addr = (char*)cfg->addr;
+    size_t len = strlen( addr );
+    // find port separator
+    char *needle = (char*)memchr( addr, ':', len );
+    
+    // found separator
+    if( needle )
+    {
+        char *tail = needle;
+        
+        cfg->portstr = tail + 1;
+        errno = 0;
+        // calc index and remain
+        len -= (uintptr_t)tail - (uintptr_t)addr;
+        // hostname or port number too large
+        if( len > FQDN_MAX_LEN ){
+            plog( "invalid address length: %s", strerror(ERANGE) );
+            usage();
+        }
+        else if( !( cfg->port = buf_strudec2u16( (char*)cfg->portstr, needle ) ) ){
+            plog( "invalid port number: %s", cfg->portstr );
+            usage();
+        }
+        else if( errno ){
+            plog( "invalid port number: %s -- %s", cfg->portstr, strerror(errno) );
+            usage();
+        }
+        // set terminator
+        *tail = 0;
+    }
+    // hostname or port number too large
+    else if( len > FQDN_MAX_LEN ){
+        plog( "invalid address length: %s", strerror(ERANGE) );
+        usage();
+    }
+}
+
 conf_t *cfg_alloc( int argc, const char *argv[] )
 {
     conf_t *cfg = palloc( conf_t );
@@ -46,7 +86,9 @@ conf_t *cfg_alloc( int argc, const char *argv[] )
     }
     
     // set default configration
-    cfg->addr = DEFAULT_LISTEN;
+    cfg->addr = DEFAULT_ADDR;
+    cfg->port = DEFAULT_PORT;
+    cfg->portstr = NULL;
     cfg->nthd = DEFAULT_NTHREAD;
     cfg->bktsize = DEFAULT_BKTSIZE;
     cfg->mapsize = DEFAULT_DBMAPSIZE;
@@ -64,7 +106,7 @@ conf_t *cfg_alloc( int argc, const char *argv[] )
         {
             // listen-address
             if( i + 1 == argc ){
-                cfg->addr = (char*)argv[i];
+                cfg->addr = argv[i];
             }
             else
             {
@@ -73,7 +115,7 @@ conf_t *cfg_alloc( int argc, const char *argv[] )
                 
                 // check opt-type
                 if( *opt != '-' || !isalpha( opt[1] ) || opt[2] ){
-                    config_eexit( opt, "|%s|", strerror(EINVAL) );
+                    config_eexit( opt, "%s", strerror(EINVAL) );
                 }
                 // check opt val
                 errno = 0;
@@ -149,6 +191,9 @@ conf_t *cfg_alloc( int argc, const char *argv[] )
             }
         }
     }
+    
+    // last check
+    check_addr( cfg );
     
     return cfg;
 }
