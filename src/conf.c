@@ -14,8 +14,7 @@
 #define DEFAULT_ADDR        "127.0.0.1:1977"
 #define DEFAULT_PORT        1977
 #define DEFAULT_NTHREAD     1
-#define DEFAULT_BKTSIZE     4096
-#define DEFAULT_DBMAPSIZE   1024*1024*10
+#define DEFAULT_DBMAPSIZE   10
 #define DEFAULT_DBFLAGS     0
 #define DEFAULT_DBPERM      0644
 
@@ -79,6 +78,8 @@ conf_t *cfg_alloc( int argc, const char *argv[] )
 {
     conf_t *cfg = palloc( conf_t );
     char *val = rindex( argv[0], '/' );
+    int pagesize = getpagesize();
+    size_t mbytes = 1048576 / pagesize;
     
     *val = 0;
     if( !cfg ){
@@ -101,8 +102,8 @@ conf_t *cfg_alloc( int argc, const char *argv[] )
     cfg->port = DEFAULT_PORT;
     cfg->portstr = NULL;
     cfg->nthd = DEFAULT_NTHREAD;
-    cfg->bktsize = DEFAULT_BKTSIZE;
-    cfg->mapsize = DEFAULT_DBMAPSIZE;
+    cfg->bktsize = pagesize;
+    cfg->mapsize = DEFAULT_DBMAPSIZE * mbytes * pagesize;
     cfg->flgs = DEFAULT_DBFLAGS;
     cfg->perm = DEFAULT_DBPERM;
     
@@ -146,9 +147,11 @@ conf_t *cfg_alloc( int argc, const char *argv[] )
                             config_eexit( opt, "%s -- %s", val, strerror(EINVAL) );
                         }
                         else if( !cfg->mapsize ){
-                            cfg->mapsize = 10;
+                            cfg->mapsize = mbytes * pagesize;
                         }
-                        cfg->mapsize *= 1024 * 1024;
+                        else {
+                            cfg->mapsize = cfg->mapsize * mbytes * pagesize;
+                        }
                     break;
                     // db dir
                     case 'd':
@@ -201,7 +204,7 @@ conf_t *cfg_alloc( int argc, const char *argv[] )
                             config_eexit( opt, "%s -- %s", val, strerror(EINVAL) );
                         }
                         else if( !cfg->bktsize ){
-                            cfg->bktsize = DEFAULT_BKTSIZE;
+                            cfg->bktsize = pagesize;
                         }
                     break;
                     default:
