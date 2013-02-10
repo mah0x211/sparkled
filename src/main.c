@@ -18,14 +18,14 @@
 #include <pthread.h>
 #include <ev.h>
 
-#include "lmdb.h"
 #include "conf.h"
+#include "backend.h"
 
 typedef struct thd_t thd_t;
 
 typedef struct {
     conf_t *cfg;
-    MDB_env *env;
+    backend_t *b;
     struct sockaddr info;
     socklen_t infolen;
     int sock;
@@ -79,24 +79,14 @@ static void cli_read( struct ev_loop *loop, ev_io *w, int event )
 {
     #pragma unused(loop,event)
     cli_t *c = (cli_t*)w->data;
-    char buf[BUF_MAX_LEN];
-    ssize_t len = read( c->fd, buf, BUF_MAX_LEN );
     
-    if( len )
-    {
-        char *val = "hello world";
-        size_t len = strlen( val );
-        
-        write( c->fd, val, len );
-        thd_shutdown( c );
-    }
-    // some error occurred
-    else if( len == -1 ){
-        cli_shutdown( c );
-    }
-    // close by peer
-    else {
-        cli_shutdown( c );
+    switch( be_operate( c->t->s->b, c->fd ) ) {
+        // close by peer or some error occurred
+        case BE_CLOSE:
+            cli_shutdown( c );
+        break;
+        default:
+            break;
     }
 }
 
@@ -301,28 +291,6 @@ static int sock_init( sparkled_t *s )
     return rc;
 }
 
-static int db_init( sparkled_t *s )
-{
-    int rc = mdb_env_create( &s->env );
-    
-    if( rc != 0 ){
-        errno = 0;
-        pfelog( mdb_env_create, "%s", mdb_strerror( rc ) );
-    }
-    else if( ( rc = mdb_env_set_mapsize( s->env, s->cfg->mapsize ) ) != 0 ){
-        errno = 0;
-        pfelog( mdb_env_create, "%s", mdb_strerror( rc ) );
-    }
-    else if( ( rc = mdb_env_open( s->env, s->cfg->dbdir, s->cfg->flgs, 
-                                  s->cfg->perm ) ) != 0 ){
-        errno = 0;
-        pfelog( mdb_env_open, "%s -- %s", s->cfg->dbdir, mdb_strerror( rc ) );
-    }
-    
-    return rc;
-}
-
-
 static void dispose( sparkled_t *s )
 {
     // cleanup threads
@@ -345,8 +313,8 @@ static void dispose( sparkled_t *s )
     if( s->sock > 0 ){
         close( s->sock );
     }
-    if( s->env ){
-        mdb_env_close( s->env );
+    if( s->b ){
+        be_dealloc( s->b );
     }
     
     pdealloc( s );
@@ -369,7 +337,7 @@ static sparkled_t *initialize( conf_t *cfg )
         else if( pthread_cond_init( &s->cond, NULL ) != 0 ){
             pfelog( pthread_cond_init );
         }
-        else if( db_init( s ) == 0 && sock_init( s ) == 0 ){
+        else if( ( s->b = be_alloc( cfg ) ) && sock_init( s ) == 0 ){
             return s;
         }
         
