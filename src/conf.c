@@ -10,6 +10,7 @@
 #include "conf.h"
 #include "sparkled.h"
 #include <ctype.h>
+#include "lmdb.h"
 
 #define DEFAULT_ADDR        "127.0.0.1:1977"
 #define DEFAULT_PORT        1977
@@ -73,6 +74,45 @@ static void check_addr( conf_t *cfg )
         usage();
     }
 }
+
+static unsigned int parse_flgs( const char *val )
+{
+    unsigned int flgs = 0;
+    char *ptr = NULL;
+    char *token = strtok_r( (char*)val, ",", &ptr );
+    
+    while( token )
+    {
+        if( strncasecmp( token, "FIXEDMAP", strlen( token ) ) == 0 ){
+            flgs |= MDB_FIXEDMAP;
+        }
+        else if( strncasecmp( token, "NOSUBDIR", strlen( token ) ) == 0 ){
+            flgs |= MDB_NOSUBDIR;
+        }
+        else if( strncasecmp( token, "RDONLY", strlen( token ) ) == 0 ){
+            flgs |= MDB_RDONLY;
+        }
+        else if( strncasecmp( token, "WRITEMAP", strlen( token ) ) == 0 ){
+            flgs |= MDB_WRITEMAP;
+        }
+        else if( strncasecmp( token, "NOMETASYNC", strlen( token ) ) == 0 ){
+            flgs |= MDB_NOMETASYNC;
+        }
+        else if( strncasecmp( token, "NOSYNC", strlen( token ) ) == 0 ){
+            flgs |= MDB_NOSYNC;
+        }
+        else if( strncasecmp( token, "MAPASYNC", strlen( token ) ) == 0 ){
+            flgs |= MDB_MAPASYNC;
+        }
+        else {
+            plog( "invalid flag: %s", token );
+            usage();
+        }
+        token = strtok_r( NULL, ",", &ptr );
+    }
+
+    return flgs;
+} 
 
 conf_t *cfg_alloc( int argc, const char *argv[] )
 {
@@ -163,10 +203,10 @@ conf_t *cfg_alloc( int argc, const char *argv[] )
                             usage();
                         }
                     break;
-                    /* TODO: flags
+                    // flags
                     case 'f':
+                        cfg->flgs = parse_flgs( val );
                     break;
-                    */
                     // perm
                     case 'p':
                         cfg->perm = buf_stroct2u16( val, needle );
