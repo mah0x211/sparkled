@@ -48,7 +48,7 @@ typedef struct {
     thd_t *t;
     int fd;
     ev_io read_ev;
-} client_t;
+} cli_t;
 
 #define fd_setnonblock(fd)({ \
     int rc = fcntl( fd, F_GETFD ); \
@@ -68,17 +68,17 @@ typedef struct {
 
 #define BUF_MAX_LEN     8092
 
-static void thd_shutdown( client_t *c )
+static void cli_shutdown( cli_t *c )
 {
     ev_io_stop( c->t->loop, &c->read_ev );
     fd_close( c->fd );
     pdealloc( c );
 }
 
-static void thd_read( struct ev_loop *loop, ev_io *w, int event )
+static void cli_read( struct ev_loop *loop, ev_io *w, int event )
 {
     #pragma unused(loop,event)
-    client_t *c = (client_t*)w->data;
+    cli_t *c = (cli_t*)w->data;
     char buf[BUF_MAX_LEN];
     ssize_t len = read( c->fd, buf, BUF_MAX_LEN );
     
@@ -92,25 +92,24 @@ static void thd_read( struct ev_loop *loop, ev_io *w, int event )
     }
     // some error occurred
     else if( len == -1 ){
-        thd_shutdown( c );
+        cli_shutdown( c );
     }
     // close by peer
     else {
-        thd_shutdown( c );
+        cli_shutdown( c );
     }
 }
 
-static void thd_accept( struct ev_loop *loop, ev_io *w, int event )
+static void cli_accept( struct ev_loop *loop, ev_io *w, int event )
 {
     #pragma unused(event)
     thd_t *t = (thd_t*)ev_userdata( loop );
     int fd = accept( w->fd, NULL, NULL );
     
-	// wait while client connection
 	if( fd > 0 )
     {
         int rc = -1;
-        client_t *c = pcalloc( 1, client_t );
+        cli_t *c = pcalloc( 1, cli_t );
         
         if( !c ){
             pfelog( pcalloc );
@@ -126,13 +125,12 @@ static void thd_accept( struct ev_loop *loop, ev_io *w, int event )
             fd_close( fd );
             pdealloc( c );
         }
-        // assign sock event
         else {
             c->t = t;
             c->fd = fd;
             // assign event
             c->read_ev.data = (void*)c;
-            ev_io_init( &c->read_ev, thd_read, c->fd, EV_READ );
+            ev_io_init( &c->read_ev, cli_read, c->fd, EV_READ );
             ev_io_start( t->loop, &c->read_ev );
         }
     }
@@ -163,7 +161,7 @@ static void *thd_listen( void *arg )
         // assign events
         ev_async_init( &t->term_ev, thd_term );
         ev_async_start( t->loop, &t->term_ev );
-        ev_io_init( &t->accept_ev, thd_accept, t->s->sock, EV_READ );
+        ev_io_init( &t->accept_ev, cli_accept, t->s->sock, EV_READ );
         ev_io_start( t->loop, &t->accept_ev );
         
         // run infinite-loop
