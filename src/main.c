@@ -224,8 +224,8 @@ static int create_thds( sparkled_t *s )
 static int sock_init( sparkled_t *s )
 {
     const struct addrinfo hints = {
-        .ai_flags = 0,
-        .ai_family = AF_INET,
+        .ai_flags = AI_PASSIVE,
+        .ai_family = AF_UNSPEC,
         .ai_socktype = SOCK_STREAM,
         .ai_protocol = IPPROTO_TCP,
         // initialize
@@ -240,8 +240,9 @@ static int sock_init( sparkled_t *s )
     
     // hostname to address
     memcpy( host, s->cfg->addr, strlen( s->cfg->addr ) );
-    rc = getaddrinfo( ( *host == '*' ) ? NULL : host, s->cfg->portstr, 
+    rc = getaddrinfo( ( *host == '*' ) ? NULL : host, s->cfg->port, 
                       &hints, &res );
+    
     if( rc != 0 ){
         errno = rc;
         pfelog( getaddrinfo, " -- address: %s", host );
