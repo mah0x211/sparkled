@@ -12,8 +12,8 @@
 #include <ctype.h>
 #include "lmdb.h"
 
-#define DEFAULT_ADDR        "127.0.0.1:1977"
-#define DEFAULT_PORT        1977
+#define DEFAULT_ADDR        "127.0.0.1"
+#define DEFAULT_PORT        "1977"
 #define DEFAULT_NTHREAD     1
 #define DEFAULT_DBMAPSIZE   10
 #define DEFAULT_DBFLAGS     0
@@ -48,7 +48,7 @@ static void check_addr( conf_t *cfg )
     {
         char *tail = needle;
         
-        cfg->portstr = tail + 1;
+        cfg->port = tail + 1;
         errno = 0;
         // calc index and remain
         len -= (uintptr_t)tail - (uintptr_t)addr;
@@ -57,12 +57,12 @@ static void check_addr( conf_t *cfg )
             plog( "invalid address length: %s", strerror(ERANGE) );
             usage();
         }
-        else if( !( cfg->port = buf_strudec2u16( (char*)cfg->portstr, needle ) ) ){
-            plog( "invalid port number: %s", cfg->portstr );
+        else if( !buf_strudec2u16( (char*)cfg->port, needle ) ){
+            plog( "invalid port number: %s", cfg->port );
             usage();
         }
         else if( errno ){
-            plog( "invalid port number: %s -- %s", cfg->portstr, strerror(errno) );
+            plog( "invalid port number: %s -- %s", cfg->port, strerror(errno) );
             usage();
         }
         // set terminator
@@ -140,7 +140,6 @@ conf_t *cfg_alloc( int argc, const char *argv[] )
     }
     cfg->addr = DEFAULT_ADDR;
     cfg->port = DEFAULT_PORT;
-    cfg->portstr = NULL;
     cfg->nthd = DEFAULT_NTHREAD;
     cfg->bktsize = pagesize;
     cfg->mapsize = DEFAULT_DBMAPSIZE * mbytes * pagesize;

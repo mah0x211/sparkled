@@ -18,8 +18,7 @@ typedef struct {
     // TODO: working dir
     // const char *cwd;
     const char *addr;
-    const char *portstr;
-    uint16_t port;
+    const char *port;
     uint8_t nthd;
     uint16_t bktsize;
     uint32_t mapsize;
