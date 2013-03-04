@@ -12,9 +12,8 @@
 #include <ctype.h>
 #include "lmdb.h"
 
-#define DEFAULT_ADDR        "127.0.0.1"
-#define DEFAULT_PORT        "1977"
-#define DEFAULT_NTHREAD     1
+#define DEFAULT_ADDR        "inet://127.0.0.1:1977"
+#define DEFAULT_NCHILD      1
 #define DEFAULT_DBMAPSIZE   10
 #define DEFAULT_DBFLAGS     0
 #define DEFAULT_DBPERM      0644
@@ -33,46 +32,6 @@ static void usage( void )
         "\n" );
     
     exit( EXIT_FAILURE );
-}
-
-
-static void check_addr( conf_t *cfg )
-{
-    char *addr = (char*)cfg->addr;
-    size_t len = strlen( addr );
-    // find port separator
-    char *needle = (char*)memchr( addr, ':', len );
-    
-    // found separator
-    if( needle )
-    {
-        char *tail = needle;
-        
-        cfg->port = tail + 1;
-        errno = 0;
-        // calc index and remain
-        len -= (uintptr_t)tail - (uintptr_t)addr;
-        // hostname or port number too large
-        if( len > FQDN_MAX_LEN ){
-            plog( "invalid address length: %s", strerror(ERANGE) );
-            usage();
-        }
-        else if( !buf_strudec2u16( (char*)cfg->port, needle ) ){
-            plog( "invalid port number: %s", cfg->port );
-            usage();
-        }
-        else if( errno ){
-            plog( "invalid port number: %s -- %s", cfg->port, strerror(errno) );
-            usage();
-        }
-        // set terminator
-        *tail = 0;
-    }
-    // hostname or port number too large
-    else if( len > FQDN_MAX_LEN ){
-        plog( "invalid address length: %s", strerror(ERANGE) );
-        usage();
-    }
 }
 
 static unsigned int parse_flgs( const char *val )
@@ -139,8 +98,7 @@ conf_t *cfg_alloc( int argc, const char *argv[] )
         exit( EXIT_FAILURE );
     }
     cfg->addr = DEFAULT_ADDR;
-    cfg->port = DEFAULT_PORT;
-    cfg->nthd = DEFAULT_NTHREAD;
+    cfg->nch = DEFAULT_NCHILD;
     cfg->bktsize = pagesize;
     cfg->mapsize = DEFAULT_DBMAPSIZE * mbytes * pagesize;
     cfg->flgs = DEFAULT_DBFLAGS;
@@ -221,15 +179,15 @@ conf_t *cfg_alloc( int argc, const char *argv[] )
                     break;
                     // thread
                     case 't':
-                        cfg->nthd = buf_strudec2u8( val, needle );
+                        cfg->nch = buf_strudec2u8( val, needle );
                         if( errno ){
                             config_eexit( opt, "%s -- %s", val, strerror(errno) );
                         }
                         else if( *needle ){
                             config_eexit( opt, "%s -- %s", val, strerror(EINVAL) );
                         }
-                        else if( !cfg->nthd ){
-                            cfg->nthd = DEFAULT_NTHREAD;
+                        else if( !cfg->nch ){
+                            cfg->nch = DEFAULT_NCHILD;
                         }
                     break;
                     // bucket-size
@@ -252,9 +210,6 @@ conf_t *cfg_alloc( int argc, const char *argv[] )
             }
         }
     }
-    
-    // last check
-    check_addr( cfg );
     
     return cfg;
 }

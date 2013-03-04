@@ -19,7 +19,7 @@ typedef struct {
     // const char *cwd;
     const char *addr;
     const char *port;
-    uint8_t nthd;
+    uint8_t nch;
     uint16_t bktsize;
     uint32_t mapsize;
     const char *dbdir;

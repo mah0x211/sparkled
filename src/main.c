@@ -16,71 +16,60 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <pthread.h>
-#include <ev.h>
+#include <libasyncfd.h>
 
 #include "conf.h"
 #include "backend.h"
 
-typedef struct thd_t thd_t;
-
 typedef struct {
     conf_t *cfg;
     backend_t *b;
-    struct sockaddr info;
-    socklen_t infolen;
-    int sock;
-    pthread_mutex_t mutex;
-    pthread_cond_t cond;
-    uint8_t nthd;
-    thd_t **thds;
+    afd_sock_t *as;
+    int8_t nch;
+    pid_t *pids;
 } sparkled_t;
 
-struct thd_t {
-    sparkled_t *s;
-    pthread_t id;
+typedef struct {
+    backend_t *b;
+    struct sigaction sa;
     // event
-    struct ev_loop *loop;
-    ev_async term_ev;
-    ev_io accept_ev;
-};
+    afd_loop_t *loop;
+    afd_watch_t sock_ev;
+} chd_t;
 
 typedef struct {
-    thd_t *t;
     int fd;
-    ev_io read_ev;
+    afd_watch_t read_ev;
 } cli_t;
 
-#define fd_setnonblock(fd)({ \
-    int rc = fcntl( fd, F_GETFD ); \
-    if( rc != -1 ){ \
-        rc |= O_NONBLOCK|FD_CLOEXEC; \
-        rc = fcntl( fd, F_SETFD, rc ); \
-    } \
-    rc; \
-})
-
-#define fd_close(fd) (shutdown( fd, SHUT_RDWR ),close( fd ))
-
-#define sock_settcp_nodelay(fd)({ \
-    int opt = 1; \
-    setsockopt( fd, IPPROTO_TCP, TCP_NODELAY, (void*)&opt, sizeof(int) ); \
-})
-
-#define BUF_MAX_LEN     8092
+static chd_t *child;
 
 static void cli_shutdown( cli_t *c )
 {
-    ev_io_stop( c->t->loop, &c->read_ev );
-    fd_close( c->fd );
+    afd_unwatch( child->loop, AS_YES, &c->read_ev );
     pdealloc( c );
 }
 
-static void cli_read( struct ev_loop *loop, ev_io *w, int event )
+static void cli_read( afd_loop_t *loop, afd_watch_t *w, int flg, int hup )
 {
-    #pragma unused(loop,event)
-    cli_t *c = (cli_t*)w->data;
+    cli_t *c = (cli_t*)w->udata;
+    char buf[8092];
+    size_t blen = 8091;
+    ssize_t len = 0;
     
-    switch( be_operate( c->t->s->b, c->fd ) ) {
+    afd_edge_start();
+    
+    if( ( len = read( w->fd, buf, blen ) ) > 0 ){
+        buf[len] = 0;
+        plog( "[%zd]: %s", len, buf );
+        afd_edge_again();
+    }
+    else if( len == 0 || ( errno != EAGAIN && errno != EWOULDBLOCK ) ){
+        cli_shutdown( c );
+    }
+    
+    /*
+    switch( be_operate( child->b, c->fd ) ) {
         // close by peer or some error occurred
         case BE_CLOSE:
             cli_shutdown( c );
@@ -88,231 +77,152 @@ static void cli_read( struct ev_loop *loop, ev_io *w, int event )
         default:
             break;
     }
+    */
 }
 
-static void cli_accept( struct ev_loop *loop, ev_io *w, int event )
+static void cli_accept( afd_loop_t *loop, afd_watch_t *w, int flg, int hup )
 {
-    #pragma unused(event)
-    thd_t *t = (thd_t*)ev_userdata( loop );
-    int fd = accept( w->fd, NULL, NULL );
+    cli_t *c = NULL;
+    int fd = 0;
     
-	if( fd > 0 )
+	switch( afd_accept( &fd, w->fd, NULL, NULL, AS_NO ) )
     {
-        int rc = -1;
-        cli_t *c = pcalloc( 1, cli_t );
-        
-        if( !c ){
-            pfelog( pcalloc );
-            fd_close( fd );
-        }
-        else if( ( rc = fd_setnonblock( fd ) ) != 0 ){
-            pfelog( fd_setnonblock );
-            fd_close( fd );
-            pdealloc( c );
-        }
-        else if( ( rc = sock_settcp_nodelay( fd ) ) != 0 ){
-            pfelog( sock_settcp_nodelay );
-            fd_close( fd );
-            pdealloc( c );
-        }
-        else {
-            c->t = t;
-            c->fd = fd;
-            // assign event
-            c->read_ev.data = (void*)c;
-            ev_io_init( &c->read_ev, cli_read, c->fd, EV_READ );
-            ev_io_start( t->loop, &c->read_ev );
-        }
-    }
-    else if( errno != EAGAIN && errno != EWOULDBLOCK ){
-        pfelog( accept );
+        // do nothing: could not accept client socket
+        case -1:
+        break;
+        // failed to set flags
+        case 0:
+            pfelog( afd_accept );
+            close( fd );
+        break;
+        default:
+            if( !( c = palloc( cli_t ) ) ){
+                pfelog( palloc );
+                close( fd );
+            }
+            else {
+                c->fd = fd;
+                // assign event
+                afd_watch_init( &c->read_ev, fd, AS_EV_READ|AS_EV_EDGE, 
+                                cli_read, (void*)c );
+                afd_watch( child->loop, &c->read_ev );
+            }
     }
 }
 
-static void thd_term( struct ev_loop *loop, ev_async *w, int revents )
+static void chd_sigusr1( int signo )
 {
-    #pragma unused(loop,w,revents)
-    ev_break( loop, EVBREAK_ALL );
+    plog( "catch child signal: %d", signo );
+    afd_unloop( child->loop );
 }
 
-static void *thd_listen( void *arg )
+static int chd_init_signal( void )
 {
-    thd_t *t = (thd_t*)arg;
+    sigset_t ss;
     
+    // init signal
+    child->sa.sa_handler = chd_sigusr1;
+    child->sa.sa_flags = SA_RESTART;
+    // set all-signal
+    if( sigfillset( &ss ) != 0 || 
+        sigdelset( &ss, SIGUSR1 ) != 0 ||
+        sigprocmask( SIG_BLOCK, &ss, NULL ) != 0 ||
+        sigaction( SIGUSR1, &child->sa, NULL ) != 0 ){
+        return -1;
+    }
+    
+    return 0;
+}
+
+static void chd_init( conf_t *cfg, afd_sock_t *as, backend_t *b )
+{
+    if( !( child = pcalloc( 1, chd_t ) ) ){
+        pfelog( palloc );
+    }
+    else if( chd_init_signal() ){
+        pfelog( chd_init_signal );
+    }
     // create event-loop
-    if( !( t->loop = ev_loop_new( ev_recommended_backends()|EVBACKEND_KQUEUE ) ) ){
-        errno = ENOMEM;
-        pfelog( ev_loop_new );
+    else if( !( child->loop = afd_loop_alloc( as, SOMAXCONN, NULL, NULL ) ) ){
+        pfelog( afd_loop_alloc );
     }
     else
     {
-        // set userdata
-        ev_set_userdata( t->loop, arg );
-        // assign events
-        ev_async_init( &t->term_ev, thd_term );
-        ev_async_start( t->loop, &t->term_ev );
-        ev_io_init( &t->accept_ev, cli_accept, t->s->sock, EV_READ );
-        ev_io_start( t->loop, &t->accept_ev );
+        int nevt = 0;
         
-        // run infinite-loop
-        pthread_cond_signal( &t->s->cond );
-        ev_run( t->loop, 0 );
+        child->b = b;
+        afd_watch_init( &child->sock_ev, as->fd, AS_EV_READ, cli_accept, NULL );
+        afd_watch( child->loop, &child->sock_ev );
         
-        // stop events
-        ev_async_stop( t->loop, &t->term_ev );
-        ev_io_stop( t->loop, &t->accept_ev );
-        goto thdCleanup;
+        nevt = afd_loop( child->loop );
+        
+        afd_unwatch( child->loop, AS_NO, &child->sock_ev );
     }
     
-    // failed to initialize thread context
-    t->id = NULL;
-    pthread_cond_signal( &t->s->cond );
-    
-    thdCleanup:
-        if( t->loop ){
-            // cleanup
-            ev_loop_destroy( t->loop );
+    // cleanup
+    if( child )
+    {
+        if( child->loop ){
+            afd_loop_dealloc( child->loop );
         }
-
+        pdealloc( child );
+    }
     
-	return NULL;
+    exit(0);
 }
 
-static int create_thds( sparkled_t *s )
+static int create_child( sparkled_t *s )
 {
-    int rc = -1;
-    
     // allocate thread array
-    if( !( s->thds = pcalloc( s->cfg->nthd, thd_t* ) ) ){
+    if( !( s->pids = pcalloc( s->cfg->nch, pid_t ) ) ){
         pfelog( pcalloc );
     }
-    else if( ( rc = pthread_mutex_lock( &s->mutex ) ) != 0 ){
-        pfelog( pthread_mutex_lock );
-    }
     else
     {
-        thd_t *t = NULL;
+        pid_t pid = 0;
         int8_t i = 0;
         
-        for(; i < s->cfg->nthd; i++ )
+        for(; i < s->cfg->nch; i++ )
         {
-            if( !( t = pcalloc( 1, thd_t ) ) ){
-                pfelog( pcalloc );
-                rc = -1;
-                break;
+            if( ( pid = fork() ) == -1 ){
+                pfelog( fork );
+                return -1;
             }
-            t->s = s;
-            if( pthread_create( &t->id, NULL, thd_listen, (void*)t ) != 0 ){
-                pfelog( pthread_create );
-                rc = -1;
-                break;
+            else if( pid ){
+                s->nch++;
+                s->pids[i] = pid;
             }
-            pthread_cond_wait( &s->cond, &s->mutex );
-            if( !t->id ){
-                rc = -1;
-                break;
+            else {
+                chd_init( s->cfg, s->as, s->b );
             }
-            s->nthd++;
-            s->thds[i] = t;
         }
-        pthread_mutex_unlock( &s->mutex );
-    }
-    
-    return rc;
-}
-
-static int sock_init( sparkled_t *s )
-{
-    const struct addrinfo hints = {
-        .ai_flags = AI_PASSIVE,
-        .ai_family = AF_UNSPEC,
-        .ai_socktype = SOCK_STREAM,
-        .ai_protocol = IPPROTO_TCP,
-        // initialize
-        .ai_addrlen = 0,
-        .ai_canonname = NULL,
-        .ai_addr = NULL,
-        .ai_next = NULL
-    };
-    struct addrinfo *res = NULL;
-    char host[FQDN_MAX_LEN] = {0};
-    int rc;
-    
-    // hostname to address
-    memcpy( host, s->cfg->addr, strlen( s->cfg->addr ) );
-    rc = getaddrinfo( ( *host == '*' ) ? NULL : host, s->cfg->port, 
-                      &hints, &res );
-    
-    if( rc != 0 ){
-        errno = rc;
-        pfelog( getaddrinfo, " -- address: %s", host );
-    }
-    else
-    {
-        struct addrinfo *ptr = res;
         
-        rc = -1;
-        // find addrinfo
-        errno = 0;
-        for(; ptr; ptr = ptr->ai_next )
-        {
-            // try to create socket descriptor
-            s->sock = socket( ptr->ai_family, ptr->ai_socktype, ptr->ai_protocol );
-            if( s->sock != -1 )
-            {
-                int opt = 1;
-                
-                // copy address info and size
-                memcpy( (void*)&(s->info), (void*)ptr->ai_addr, ptr->ai_addrlen );
-                s->infolen = ptr->ai_addrlen;
-                
-                // set reuse addr
-                if( ( rc = setsockopt( s->sock, SOL_SOCKET, SO_REUSEADDR, 
-                                     (void*)&opt, sizeof(int) ) ) ){
-                    pfelog( setsockopt );
-                }
-                // set non-block
-                else if( ( rc = fd_setnonblock( s->sock ) ) != 0 ){
-                    pfelog( fd_setnonblock );
-                }
-                // bind address
-                else if( ( rc = bind( s->sock, &s->info, s->infolen ) ) != 0 ){
-                    pfelog( bind );
-                }
-                // listen socket
-                else if( ( rc = listen( s->sock, SOMAXCONN ) ) != 0 ){
-                    pfelog( listen );
-                }
-                break;
-            }
-        }
-        freeaddrinfo( res );
+        return 0;
     }
     
-    return rc;
+    return -1;
 }
 
 static void dispose( sparkled_t *s )
 {
-    // cleanup threads
-    if( s->thds )
+    // cleanup child process
+    if( s->pids )
     {
-        // notify terminate event-loop signal to threads
-        if( s->nthd )
+        uint8_t i = 0;
+        
+        // notify terminate event-loop signal to child process
+        // wait until child process terminated
+        for(; i < s->nch; i++ )
         {
-            uint8_t i = 0;
-            
-            // wait until threads terminated
-            for(; i < s->nthd; i++ ){
-                ev_async_send( s->thds[i]->loop, &s->thds[i]->term_ev );
-                pthread_join( s->thds[i]->id, NULL );
-                pdealloc( s->thds[i] );
+            if( s->pids[i] ){
+                kill( s->pids[i], SIGUSR1 );
+                waitpid( s->pids[i], NULL, 0 );
             }
-            pdealloc( s->thds );
         }
+        pdealloc( s->pids );
     }
-    if( s->sock > 0 ){
-        close( s->sock );
+    if( s->as ){
+        afd_sock_dealloc( s->as );
     }
     if( s->b ){
         be_dealloc( s->b );
@@ -332,13 +242,9 @@ static sparkled_t *initialize( conf_t *cfg )
     else
     {
         s->cfg = cfg;
-        if( pthread_mutex_init( &s->mutex, NULL ) != 0 ){
-            pfelog( pthread_mutex_init );
-        }
-        else if( pthread_cond_init( &s->cond, NULL ) != 0 ){
-            pfelog( pthread_cond_init );
-        }
-        else if( ( s->b = be_alloc( cfg ) ) && sock_init( s ) == 0 ){
+        s->as = afd_sock_alloc( cfg->addr, strlen( cfg->addr ), AS_TYPE_STREAM );
+        
+        if( s->as && ( s->b = be_alloc( cfg ) ) ){
             return s;
         }
         
@@ -354,13 +260,16 @@ int wait4signal( void )
 {
     int rc = 0;
     int signo = 0;
-    sigset_t sw;
+    sigset_t ss;
     
     // set all-signal
-    if( ( rc = sigfillset( &sw ) ) != 0 ){
+    if( ( rc = sigfillset( &ss ) ) != 0 ){
         pfelog( sigfillset );
     }
-    else if( ( rc = sigwait( &sw, &signo ) ) != 0 ){
+    else if( ( rc = sigprocmask( SIG_BLOCK, &ss, NULL ) ) != 0 ){
+        pfelog( sigprocmask );
+    }
+    else if( ( rc = sigwait( &ss, &signo ) ) != 0 ){
         pfelog( sigwait );
     }
     else {
@@ -378,7 +287,7 @@ int main( int argc, const char *argv[] )
     if( s )
     {
         plog( "starting" );
-        if( create_thds( s ) == 0 ){
+        if( afd_listen( s->as, SOMAXCONN ) == 0 && create_child( s ) == 0 ){
             wait4signal();
         }
         dispose( s );
