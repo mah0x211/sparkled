@@ -8,16 +8,7 @@
  */
 #include "sparkled.h"
 #include <signal.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <arpa/inet.h>
-#include <pthread.h>
 #include <libasyncfd.h>
-
 #include "conf.h"
 #include "backend.h"
 
@@ -58,8 +49,9 @@ static void cli_read( afd_loop_t *loop, afd_watch_t *w, int flg, int hup )
     ssize_t len = 0;
     
     afd_edge_start();
-    
-    if( ( len = read( w->fd, buf, blen ) ) > 0 ){
+    // TODO: parse protocol
+    if( ( len = read( w->fd, buf, blen ) ) > 0 )
+    {
         buf[len] = 0;
         plog( "[%zd]: %s", len, buf );
         afd_edge_again();
@@ -255,8 +247,7 @@ static sparkled_t *initialize( conf_t *cfg )
     return s;
 }
 
-
-int wait4signal( void )
+static int wait4signal( void )
 {
     int rc = 0;
     int signo = 0;
@@ -298,4 +289,5 @@ int main( int argc, const char *argv[] )
     
     return 0;
 }
+
 
